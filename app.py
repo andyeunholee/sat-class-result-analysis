@@ -2,11 +2,9 @@
 Elite Prep — SAT Class Results Analysis (Streamlit web app)
 ===========================================================
 Upload all students' SAT/DSAT score-report PDFs for one test and download
-a class-wide Word report:  "<TEST CODE> Result Analysis Teacher Report.docx"
+the class-wide Word report:  "<TEST CODE> Result Analysis Teacher Report.docx"
 
-To include the page-1 score-trend curve, also upload the PDFs from earlier
-practice tests — the app groups students by test code automatically and
-reports on the most recent test.
+The test code and test date are read automatically from the PDFs.
 
 Run locally:   streamlit run app.py
 """
@@ -22,16 +20,14 @@ import streamlit as st
 from generate_class_report import (
     ClassStats,
     build_report,
-    make_trend_chart,
     parse_date_iso,
     parse_pdf_stream,
     parse_text,
     sanitize_branding,
-    upsert_history_rows,
 )
 
 NAVY = "#1F3864"
-BLUE = "#2E74B5"
+BLUE = "#2E75B6"
 
 st.set_page_config(
     page_title="Elite Prep — SAT Class Results Analysis",
@@ -80,11 +76,9 @@ st.markdown(
 st.title("SAT Class Results Analysis Report")
 st.caption(
     "Upload every student's SAT/DSAT practice-test score-report PDF for one "
-    "test. The app analyzes the whole class and generates the Word report "
-    "(most-missed questions per section, skill-area accuracy, and class "
-    "averages). To also get the score-trend curve on page 1, upload the "
-    "PDFs from earlier practice tests together — tests are grouped by test "
-    "code automatically, and the report is written for the most recent test."
+    "test, then click Generate. The test code and test date are detected "
+    "automatically, and the class-wide Word report is created in the "
+    "standard Elite Prep teacher-report format."
 )
 
 # ---------------------------------------------------------------------------
@@ -99,24 +93,10 @@ uploads = st.file_uploader(
 )
 
 # ---------------------------------------------------------------------------
-# 2) Test information
+# 2) Generate
 # ---------------------------------------------------------------------------
 
-st.header("2. Test information")
-col1, col2 = st.columns(2)
-with col1:
-    test_code_in = st.text_input(
-        "Test code (leave blank to auto-detect)", placeholder="e.g. DSAT-02-A")
-with col2:
-    test_date_in = st.text_input(
-        "Test date (leave blank to auto-detect)",
-        placeholder="e.g. June 8, 2026")
-
-# ---------------------------------------------------------------------------
-# 3) Generate
-# ---------------------------------------------------------------------------
-
-st.header("3. Generate the report")
+st.header("2. Generate the report")
 
 if st.button("Generate Report", type="primary", use_container_width=True):
     if not uploads:
@@ -151,79 +131,57 @@ if st.button("Generate Report", type="primary", use_container_width=True):
                  "Please check that these are SAT score-report PDFs.")
         st.stop()
 
-    # --- group students by test code (enables the multi-test trend curve) ---
+    # Safety net: if PDFs from more than one test were mixed in, analyze the
+    # most recent test and tell the user what was set aside.
     groups = defaultdict(list)
     for s in students:
         groups[sanitize_branding(s.test_code or "").strip()
                or "(unknown test)"].append(s)
+    if len(groups) > 1:
+        def group_key(code):
+            dates = [parse_date_iso(s.test_date) for s in groups[code]
+                     if s.test_date]
+            dates = [d for d in dates if d]
+            return (max(dates) if dates else "", len(groups[code]))
+        current_code = max(groups, key=group_key)
+        skipped = [c for c in groups if c != current_code]
+        st.warning(f"PDFs from more than one test were uploaded "
+                   f"({', '.join(sorted(groups))}). The report was generated "
+                   f"for **{current_code}**; files from {', '.join(skipped)} "
+                   f"were not included.")
+        students = groups[current_code]
 
-    def group_date(code):
-        dates = [parse_date_iso(s.test_date) for s in groups[code]
-                 if s.test_date]
-        dates = [d for d in dates if d]
-        return max(dates) if dates else ""
-
-    codes = sorted(groups, key=lambda c: (group_date(c), c))
-
-    # The report is written for the test the user named, else the latest one.
-    current_code = None
-    if test_code_in.strip():
-        for c in codes:
-            if c.lower() == test_code_in.strip().lower():
-                current_code = c
-        if current_code is None and len(codes) == 1:
-            current_code = codes[0]  # user is renaming the only test
-    if current_code is None:
-        current_code = codes[-1]
-
-    current_students = groups[current_code]
-    stats = ClassStats(current_students)
+    stats = ClassStats(students)
 
     test_code = sanitize_branding(
-        test_code_in.strip()
-        or (current_code if current_code != "(unknown test)" else "")
+        next((s.test_code for s in students if s.test_code), None)
         or "SAT Practice Test").strip()
-    test_date = (test_date_in.strip()
-                 or next((s.test_date for s in current_students
-                          if s.test_date), None)
+    test_date = (next((s.test_date for s in students if s.test_date), None)
                  or datetime.date.today().strftime("%B %d, %Y"))
-
-    # --- page-1 trend curve across all uploaded tests ------------------------
-    trend_png = None
-    if len(codes) > 1:
-        rows = []
-        for c in codes:
-            if c == current_code:
-                continue
-            g_stats = ClassStats(groups[c])
-            g_date = next((s.test_date for s in groups[c] if s.test_date), "")
-            rows = upsert_history_rows(rows, c, g_date, g_stats)
-        rows = upsert_history_rows(rows, test_code, test_date, stats)
-        tmp_png = Path(tempfile.gettempdir()) / "eliteprep_trend_app.png"
-        if make_trend_chart(rows, tmp_png):
-            trend_png = tmp_png
 
     # --- build the Word report ------------------------------------------------
     out_name = f"{test_code} Result Analysis Teacher Report.docx"
     out_name = "".join(c if c not in '\\/:*?"<>|' else "-" for c in out_name)
     tmp_docx = Path(tempfile.gettempdir()) / out_name
-    build_report(stats, test_code, test_date, tmp_docx, trend_png)
+    build_report(stats, test_code, test_date, tmp_docx)
     docx_bytes = tmp_docx.read_bytes()
 
     st.success(f"Report generated for **{stats.n} student"
                f"{'s' if stats.n != 1 else ''}** — Test Code **{test_code}**, "
-               f"Test Date **{test_date}**.")
-    if len(codes) > 1:
-        st.info(f"{len(codes)} tests detected ({', '.join(codes)}). "
-                f"The report was written for **{current_code}**; the other "
-                f"tests were used for the page-1 score-trend curve.")
+               f"Test Date **{test_date}** (detected from the PDFs).")
 
-    # --- on-screen preview ------------------------------------------------------
+    # --- download ---------------------------------------------------------------
+    st.download_button(
+        f"⬇️ Download Word report — {out_name}",
+        data=docx_bytes,
+        file_name=out_name,
+        mime=("application/vnd.openxmlformats-officedocument"
+              ".wordprocessingml.document"),
+        use_container_width=True,
+    )
+
+    # --- on-screen preview --------------------------------------------------------
     st.subheader("Preview")
-
-    if trend_png:
-        st.image(str(trend_png),
-                 caption="Class Average Score Trend (page 1 of the report)")
 
     c1, c2, c3 = st.columns(3)
     for col, label, key in ((c1, "Total", "total"),
@@ -250,20 +208,8 @@ if st.button("Generate Report", type="primary", use_container_width=True):
                     "Questions": ", ".join(f"Q{q}" for q in qs),
                 } for c, qs in error_groups])
 
-    # --- download ------------------------------------------------------------
-    st.subheader("Download")
-    st.download_button(
-        f"⬇️ Download Word report — {out_name}",
-        data=docx_bytes,
-        file_name=out_name,
-        mime=("application/vnd.openxmlformats-officedocument"
-              ".wordprocessingml.document"),
-        use_container_width=True,
-    )
-
 st.markdown(
     f"<hr style='border-top:2px solid {NAVY};'>"
-    f"<div style='color:{NAVY};font-weight:700;'>Elite Prep</div>"
-    f"<div style='color:{BLUE};'>www.eliteprep.com</div>",
+    f"<div style='color:{NAVY};font-weight:700;'>Elite Prep</div>",
     unsafe_allow_html=True,
 )
