@@ -31,6 +31,18 @@ and generates a class-wide Word report:
 - Navy/blue Elite Prep design system: navy headings, navy table headers with
   white text, light-blue zebra rows, blue accents.
 
+## Web app (Streamlit)
+
+The same engine runs as a web app (`app.py`): upload all students' PDFs,
+click **Generate Report**, and download the Word file. To get the page-1
+score-trend curve in the web app, upload the PDFs from earlier practice
+tests together with the current ones — the app groups tests by test code
+automatically and writes the report for the most recent test.
+
+```
+streamlit run app.py
+```
+
 ## How to use
 
 1. Put all the students' score-report PDF files for **one test** into one

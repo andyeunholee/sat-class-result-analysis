@@ -4,12 +4,17 @@ Elite Prep — SAT Class Results Analysis (Streamlit web app)
 Upload all students' SAT/DSAT score-report PDFs for one test and download
 a class-wide Word report:  "<TEST CODE> Result Analysis Teacher Report.docx"
 
+To include the page-1 score-trend curve, also upload the PDFs from earlier
+practice tests — the app groups students by test code automatically and
+reports on the most recent test.
+
 Run locally:   streamlit run app.py
 """
 
 import datetime
 import io
 import tempfile
+from collections import defaultdict
 from pathlib import Path
 
 import streamlit as st
@@ -17,11 +22,10 @@ import streamlit as st
 from generate_class_report import (
     ClassStats,
     build_report,
-    history_rows_to_csv,
     make_trend_chart,
+    parse_date_iso,
     parse_pdf_stream,
     parse_text,
-    read_history_csv,
     sanitize_branding,
     upsert_history_rows,
 )
@@ -77,8 +81,10 @@ st.title("SAT Class Results Analysis Report")
 st.caption(
     "Upload every student's SAT/DSAT practice-test score-report PDF for one "
     "test. The app analyzes the whole class and generates the Word report "
-    "(most-missed questions per section, skill-area accuracy, class "
-    "averages, and the score-trend graph on page 1)."
+    "(most-missed questions per section, skill-area accuracy, and class "
+    "averages). To also get the score-trend curve on page 1, upload the "
+    "PDFs from earlier practice tests together — tests are grouped by test "
+    "code automatically, and the report is written for the most recent test."
 )
 
 # ---------------------------------------------------------------------------
@@ -107,28 +113,10 @@ with col2:
         placeholder="e.g. June 8, 2026")
 
 # ---------------------------------------------------------------------------
-# 3) Score history for the page-1 trend graph
+# 3) Generate
 # ---------------------------------------------------------------------------
 
-st.header("3. Score history (page-1 trend graph)")
-st.caption(
-    "The report's first page shows the class-average score curve from the "
-    "first practice test to this one. Upload the `score_history.csv` you "
-    "downloaded after the previous test to continue the same curve. "
-    "If this is the first test, leave it empty."
-)
-history_upload = st.file_uploader("Previous score_history.csv (optional)",
-                                  type=["csv"])
-include_trend = st.checkbox("Include the trend graph on page 1", value=True)
-
-if "history_rows" not in st.session_state:
-    st.session_state.history_rows = None
-
-# ---------------------------------------------------------------------------
-# Generate
-# ---------------------------------------------------------------------------
-
-st.header("4. Generate the report")
+st.header("3. Generate the report")
 
 if st.button("Generate Report", type="primary", use_container_width=True):
     if not uploads:
@@ -163,36 +151,59 @@ if st.button("Generate Report", type="primary", use_container_width=True):
                  "Please check that these are SAT score-report PDFs.")
         st.stop()
 
-    stats = ClassStats(students)
+    # --- group students by test code (enables the multi-test trend curve) ---
+    groups = defaultdict(list)
+    for s in students:
+        groups[sanitize_branding(s.test_code or "").strip()
+               or "(unknown test)"].append(s)
+
+    def group_date(code):
+        dates = [parse_date_iso(s.test_date) for s in groups[code]
+                 if s.test_date]
+        dates = [d for d in dates if d]
+        return max(dates) if dates else ""
+
+    codes = sorted(groups, key=lambda c: (group_date(c), c))
+
+    # The report is written for the test the user named, else the latest one.
+    current_code = None
+    if test_code_in.strip():
+        for c in codes:
+            if c.lower() == test_code_in.strip().lower():
+                current_code = c
+        if current_code is None and len(codes) == 1:
+            current_code = codes[0]  # user is renaming the only test
+    if current_code is None:
+        current_code = codes[-1]
+
+    current_students = groups[current_code]
+    stats = ClassStats(current_students)
 
     test_code = sanitize_branding(
         test_code_in.strip()
-        or next((s.test_code for s in students if s.test_code), None)
+        or (current_code if current_code != "(unknown test)" else "")
         or "SAT Practice Test").strip()
     test_date = (test_date_in.strip()
-                 or next((s.test_date for s in students if s.test_date), None)
+                 or next((s.test_date for s in current_students
+                          if s.test_date), None)
                  or datetime.date.today().strftime("%B %d, %Y"))
 
-    # --- history / trend graph ---------------------------------------------
+    # --- page-1 trend curve across all uploaded tests ------------------------
     trend_png = None
-    history_csv_text = None
-    if include_trend:
-        if history_upload is not None:
-            rows = read_history_csv(
-                history_upload.getvalue().decode("utf-8-sig", "replace"))
-        elif st.session_state.history_rows:
-            rows = list(st.session_state.history_rows)
-        else:
-            rows = []
+    if len(codes) > 1:
+        rows = []
+        for c in codes:
+            if c == current_code:
+                continue
+            g_stats = ClassStats(groups[c])
+            g_date = next((s.test_date for s in groups[c] if s.test_date), "")
+            rows = upsert_history_rows(rows, c, g_date, g_stats)
         rows = upsert_history_rows(rows, test_code, test_date, stats)
-        st.session_state.history_rows = rows
-        history_csv_text = history_rows_to_csv(rows)
-
         tmp_png = Path(tempfile.gettempdir()) / "eliteprep_trend_app.png"
         if make_trend_chart(rows, tmp_png):
             trend_png = tmp_png
 
-    # --- build the Word report ----------------------------------------------
+    # --- build the Word report ------------------------------------------------
     out_name = f"{test_code} Result Analysis Teacher Report.docx"
     out_name = "".join(c if c not in '\\/:*?"<>|' else "-" for c in out_name)
     tmp_docx = Path(tempfile.gettempdir()) / out_name
@@ -202,8 +213,12 @@ if st.button("Generate Report", type="primary", use_container_width=True):
     st.success(f"Report generated for **{stats.n} student"
                f"{'s' if stats.n != 1 else ''}** — Test Code **{test_code}**, "
                f"Test Date **{test_date}**.")
+    if len(codes) > 1:
+        st.info(f"{len(codes)} tests detected ({', '.join(codes)}). "
+                f"The report was written for **{current_code}**; the other "
+                f"tests were used for the page-1 score-trend curve.")
 
-    # --- on-screen preview ----------------------------------------------------
+    # --- on-screen preview ------------------------------------------------------
     st.subheader("Preview")
 
     if trend_png:
@@ -224,19 +239,19 @@ if st.button("Generate Report", type="primary", use_container_width=True):
                      ("RW", 1, "③ English (R&W) — Section 1 (Module 1)"),
                      ("RW", 2, "④ English (R&W) — Section 2 (Module 2)")]
     for section, module, title in section_order:
-        groups = stats.error_groups(section, module)
+        error_groups = stats.error_groups(section, module)
         with st.expander(title, expanded=False):
-            if not groups:
+            if not error_groups:
                 st.write("No incorrect answers recorded.")
             else:
                 st.table([{
                     "Error Rate": f"{round(100 * c / stats.n)}%",
                     "Students Missed": f"{c} of {stats.n}",
                     "Questions": ", ".join(f"Q{q}" for q in qs),
-                } for c, qs in groups])
+                } for c, qs in error_groups])
 
-    # --- downloads -------------------------------------------------------------
-    st.subheader("Downloads")
+    # --- download ------------------------------------------------------------
+    st.subheader("Download")
     st.download_button(
         f"⬇️ Download Word report — {out_name}",
         data=docx_bytes,
@@ -245,15 +260,6 @@ if st.button("Generate Report", type="primary", use_container_width=True):
               ".wordprocessingml.document"),
         use_container_width=True,
     )
-    if history_csv_text:
-        st.download_button(
-            "⬇️ Download updated score_history.csv "
-            "(keep this file — upload it next time to continue the trend curve)",
-            data=history_csv_text,
-            file_name="score_history.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
 
 st.markdown(
     f"<hr style='border-top:2px solid {NAVY};'>"
