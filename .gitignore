@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+score_history.csv
+*.extracted.txt
+SAMPLE - *.docx
+.streamlit/secrets.toml
