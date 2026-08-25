@@ -1,8 +1,10 @@
 """
-Elite Prep — SAT Class Results Analysis (Streamlit web app)
-===========================================================
+Elite Prep — SAT Class Test Result Analysis for Teachers (Streamlit app)
+========================================================================
 Upload all students' SAT/DSAT score-report PDFs for one test and download
-the class-wide Word report:  "<TEST CODE> Result Analysis Teacher Report.docx"
+the class-wide Word report:
+
+    "<TEST CODE> SAT Test Result Analysis for Teacher.docx"
 
 The test code and test date are read automatically from the PDFs.
 
@@ -11,18 +13,30 @@ Run locally:   streamlit run app.py
 
 import datetime
 import io
+import os
 import tempfile
 from collections import defaultdict
 from pathlib import Path
 
 import streamlit as st
 
+# Load ANTHROPIC_API_KEY from a .env file next to this script, if present.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
+
 from generate_class_report import (
     ClassStats,
     build_report,
     parse_date_iso,
-    parse_pdf_stream,
-    parse_text,
+    apply_skill_map,
+    extract_pdf_text,
+    load_skill_map,
+    parse_skill_map_text,
+    parse_text_all,
+    report_filename,
     sanitize_branding,
 )
 
@@ -30,7 +44,7 @@ NAVY = "#1F3864"
 BLUE = "#2E75B6"
 
 st.set_page_config(
-    page_title="Elite Prep — SAT Class Results Analysis",
+    page_title="Elite Prep — SAT Class Test Result Analysis",
     page_icon="📊",
     layout="centered",
 )
@@ -73,12 +87,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("SAT Class Results Analysis Report")
+st.title("SAT Test Result Analysis for Teachers")
 st.caption(
-    "Upload every student's SAT/DSAT practice-test score-report PDF for one "
-    "test, then click Generate. The test code and test date are detected "
-    "automatically, and the class-wide Word report is created in the "
-    "standard Elite Prep teacher-report format."
+    "Upload every student's SAT/DSAT practice-test score-report PDF for "
+    "one test, then click Generate. The test code and test date are "
+    "detected automatically, and the class-wide Word report is created "
+    "in the standard Elite Prep teacher-report format."
 )
 
 # ---------------------------------------------------------------------------
@@ -87,8 +101,9 @@ st.caption(
 
 st.header("1. Upload student score reports")
 uploads = st.file_uploader(
-    "Student score-report PDFs (one per student — select all at once)",
-    type=["pdf", "txt"],
+    "Student score-report PDFs (one per student — select all at once). "
+    "A question-to-skill map CSV for the test may be added too.",
+    type=["pdf", "txt", "csv"],
     accept_multiple_files=True,
 )
 
@@ -98,29 +113,59 @@ uploads = st.file_uploader(
 
 st.header("2. Generate the report")
 
+# Claude Opus 4.8 writes the commentary whenever an API key is available.
+# Key lookup order: .env (loaded above) / environment -> secrets.toml.
+api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+if not api_key:
+    try:
+        api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    except Exception:  # no secrets.toml at all - that's fine
+        api_key = ""
+
 if st.button("Generate Report", type="primary", use_container_width=True):
     if not uploads:
         st.error("Please upload at least one student score-report PDF first.")
         st.stop()
 
     students, failed = [], []
+    uploaded_map = {}
+    csv_uploads = [u for u in uploads if u.name.lower().endswith(".csv")]
+    uploads = [u for u in uploads if not u.name.lower().endswith(".csv")]
+    for u in csv_uploads:
+        uploaded_map.update(parse_skill_map_text(
+            u.getvalue().decode("utf-8-sig", "replace")))
+    if not uploads:
+        st.error("Please upload the student score-report PDFs as well.")
+        st.stop()
     progress = st.progress(0.0, text="Parsing score reports...")
     for i, up in enumerate(sorted(uploads, key=lambda u: u.name)):
         try:
             if up.name.lower().endswith(".txt"):
-                s = parse_text(up.getvalue().decode("utf-8", "replace"),
-                               up.name)
+                text = up.getvalue().decode("utf-8", "replace")
             else:
-                s = parse_pdf_stream(io.BytesIO(up.getvalue()), up.name)
+                text = extract_pdf_text(io.BytesIO(up.getvalue()))
+            # Debug copy of the extracted text (local only, git-ignored) so
+            # the parser can be adapted to new score-report layouts.
+            try:
+                dbg = Path(__file__).resolve().parent / "PDFs" / "_debug"
+                dbg.mkdir(parents=True, exist_ok=True)
+                dbg_file = dbg / (up.name + ".extracted.txt")
+                dbg_file.write_text(text, encoding="utf-8")
+                st.caption(f"Extracted text saved for parser tuning: "
+                           f"`{dbg_file}`")
+            except Exception as e:
+                st.caption(f"(could not save extracted text: {e})")
+            found = parse_text_all(text, up.name)
         except Exception as e:
             failed.append((up.name, f"could not read file: {e}"))
-            s = None
-        if s is not None and s.parsed_ok:
-            students.append(s)
-        elif s is not None:
+            found = None
+        if found:
+            students.extend(found)   # a file may hold many students
+        elif found is not None:
             failed.append((up.name, "no question-level data recognized"))
-        progress.progress((i + 1) / len(uploads),
-                          text=f"Parsing score reports... ({i + 1}/{len(uploads)})")
+        progress.progress(
+            (i + 1) / len(uploads),
+            text=f"Parsing score reports... ({i + 1}/{len(uploads)})")
     progress.empty()
 
     if failed:
@@ -131,12 +176,12 @@ if st.button("Generate Report", type="primary", use_container_width=True):
                  "Please check that these are SAT score-report PDFs.")
         st.stop()
 
-    # Safety net: if PDFs from more than one test were mixed in, analyze the
-    # most recent test and tell the user what was set aside.
+    # Safety net: if PDFs from more than one test were mixed in, analyze
+    # the most recent test and tell the user what was set aside.
     groups = defaultdict(list)
     for s in students:
-        groups[sanitize_branding(s.test_code or "").strip()
-               or "(unknown test)"].append(s)
+        code = sanitize_branding(s.test_code or "").strip() or "(unknown test)"
+        groups[code].append(s)
     if len(groups) > 1:
         def group_key(code):
             dates = [parse_date_iso(s.test_date) for s in groups[code]
@@ -146,12 +191,10 @@ if st.button("Generate Report", type="primary", use_container_width=True):
         current_code = max(groups, key=group_key)
         skipped = [c for c in groups if c != current_code]
         st.warning(f"PDFs from more than one test were uploaded "
-                   f"({', '.join(sorted(groups))}). The report was generated "
-                   f"for **{current_code}**; files from {', '.join(skipped)} "
-                   f"were not included.")
+                   f"({', '.join(sorted(groups))}). The report was "
+                   f"generated for **{current_code}**; files from "
+                   f"{', '.join(skipped)} were not included.")
         students = groups[current_code]
-
-    stats = ClassStats(students)
 
     test_code = sanitize_branding(
         next((s.test_code for s in students if s.test_code), None)
@@ -159,18 +202,51 @@ if st.button("Generate Report", type="primary", use_container_width=True):
     test_date = (next((s.test_date for s in students if s.test_date), None)
                  or datetime.date.today().strftime("%B %d, %Y"))
 
-    # --- build the Word report ------------------------------------------------
-    out_name = f"{test_code} Result Analysis Teacher Report.docx"
-    out_name = "".join(c if c not in '\\/:*?"<>|' else "-" for c in out_name)
+    # --- question -> skill-area map (skill_maps/<code>.csv or uploaded CSV) --
+    smap = load_skill_map(test_code)
+    smap.update(uploaded_map)
+    mapped = apply_skill_map(students, smap)
+    if mapped:
+        st.caption(f"Skill-area map applied for {test_code} "
+                   f"({len(smap)} questions mapped).")
+    elif not any(q.domain for s in students for q in s.questions):
+        st.info(f"No question-to-skill map found for **{test_code}**, so "
+                "section 2 (Average Accuracy by Skill Area) will show N/A. "
+                f"Add `skill_maps/{test_code}.csv` (see "
+                "`skill_maps/README.md`) or upload the CSV with the PDFs.")
+
+    stats = ClassStats(students)
+
+    # --- optional AI commentary (anonymized statistics only) -----------------
+    narrative = None
+    if not api_key:
+        st.warning("No Anthropic API key found in .env - using the "
+                   "built-in commentary instead.")
+    else:
+        with st.spinner("Claude Opus 4.8 is writing the commentary..."):
+            try:
+                from ai_narrative import write_narrative
+                narrative = write_narrative(stats, test_code, test_date,
+                                            api_key=api_key)
+            except Exception as e:
+                st.warning(f"AI commentary unavailable ({e}) - using "
+                           "the built-in commentary instead.")
+
+    # --- build the Word report ---------------------------------------------
+    out_name = report_filename(test_code)
     tmp_docx = Path(tempfile.gettempdir()) / out_name
-    build_report(stats, test_code, test_date, tmp_docx)
+    build_report(stats, test_code, test_date, tmp_docx, narrative=narrative)
     docx_bytes = tmp_docx.read_bytes()
 
     st.success(f"Report generated for **{stats.n} student"
-               f"{'s' if stats.n != 1 else ''}** — Test Code **{test_code}**, "
-               f"Test Date **{test_date}** (detected from the PDFs).")
+               f"{'s' if stats.n != 1 else ''}** — Test Code "
+               f"**{test_code}**, Test Date **{test_date}** "
+               f"(detected from the PDFs). "
+               + ("Commentary written by Claude Opus 4.8. " if narrative
+                  else "")
+               + "No student names appear in the report.")
 
-    # --- download ---------------------------------------------------------------
+    # --- download ------------------------------------------------------------
     st.download_button(
         f"⬇️ Download Word report — {out_name}",
         data=docx_bytes,
@@ -180,7 +256,7 @@ if st.button("Generate Report", type="primary", use_container_width=True):
         use_container_width=True,
     )
 
-    # --- on-screen preview --------------------------------------------------------
+    # --- on-screen preview -----------------------------------------------------
     st.subheader("Preview")
 
     c1, c2, c3 = st.columns(3)

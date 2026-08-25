@@ -4,3 +4,6 @@ score_history.csv
 *.extracted.txt
 SAMPLE - *.docx
 .streamlit/secrets.toml
+.env
+PDFs/
+~$*
