@@ -54,6 +54,28 @@ Only anonymized aggregate numbers (averages, ranges, per-skill accuracy,
 per-question miss counts) are sent to the model — never names, file names,
 or individual scores. If the API is unavailable, the built-in text is used.
 
+## Emailing the report as a Gmail draft
+
+When the app finishes a report it also saves it to Gmail as a **draft** -
+addressed, written and with the `.docx` attached - so it can be checked and
+sent by hand. **The app never sends mail itself.**
+
+Set three values in `.env` (or `.streamlit/secrets.toml`, or Streamlit Cloud's
+*Settings -> Secrets*):
+
+| Name | Meaning |
+|---|---|
+| `GMAIL_ADDRESS` | account whose Drafts folder receives the draft |
+| `GMAIL_APP_PASSWORD` | 16-character app password, https://myaccount.google.com/apppasswords |
+| `REPORT_TO` | recipient (default `sue.kim@eliteprep.com`) |
+
+Leave `GMAIL_ADDRESS` or `GMAIL_APP_PASSWORD` unset and the feature stays off;
+the app behaves exactly as it did before. A draft is never sent, so a failure
+here can never affect the report or its download button.
+
+Greeting and sign-off are the `GREETING` and `SIGNATURE` lines at the top of
+`email_draft.py`.
+
 ## Web app (Streamlit)
 
 `app.py` — upload all students' PDFs, click **Generate Report**, download
