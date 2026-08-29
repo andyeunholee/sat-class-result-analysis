@@ -74,7 +74,8 @@ def _drafts_mailbox(imap):
 def save_draft_to_gmail(msg, address, app_password):
     """Append msg to the account's Drafts mailbox.  Raises on failure."""
     with imaplib.IMAP4_SSL(IMAP_HOST) as imap:
-        imap.login(address, app_password)
+        # Google prints app passwords in four groups; the spaces are cosmetic.
+        imap.login(address.strip(), app_password.replace(" ", "").strip())
         mailbox = _drafts_mailbox(imap)
         ok, detail = imap.append(mailbox, r"\Draft",
                                  imaplib.Time2Internaldate(time.time()),
