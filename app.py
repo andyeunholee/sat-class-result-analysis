@@ -12,6 +12,7 @@ Run locally:   streamlit run app.py
 """
 
 import datetime
+import hashlib
 import io
 import os
 import tempfile
@@ -39,6 +40,7 @@ from generate_class_report import (
     report_filename,
     sanitize_branding,
 )
+from email_draft import DEFAULT_TO, build_draft_message, save_draft_to_gmail
 
 NAVY = "#1F3864"
 BLUE = "#2E75B6"
@@ -113,14 +115,19 @@ uploads = st.file_uploader(
 
 st.header("2. Generate the report")
 
+# Settings come from .env (loaded above) / the environment, else secrets.toml.
+def conf(name, default=""):
+    value = os.environ.get(name, "")
+    if not value:
+        try:
+            value = st.secrets.get(name, "")
+        except Exception:  # no secrets.toml at all - that's fine
+            value = ""
+    return value or default
+
+
 # Claude Opus 4.8 writes the commentary whenever an API key is available.
-# Key lookup order: .env (loaded above) / environment -> secrets.toml.
-api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-if not api_key:
-    try:
-        api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
-    except Exception:  # no secrets.toml at all - that's fine
-        api_key = ""
+api_key = conf("ANTHROPIC_API_KEY")
 
 if st.button("Generate Report", type="primary", use_container_width=True):
     if not uploads:
@@ -245,6 +252,39 @@ if st.button("Generate Report", type="primary", use_container_width=True):
                + ("Commentary written by Claude Opus 4.8. " if narrative
                   else "")
                + "No student names appear in the report.")
+
+    # --- Gmail draft (the app never sends; it only prepares the draft) -------
+    gmail_user, gmail_password = conf("GMAIL_ADDRESS"), conf(
+        "GMAIL_APP_PASSWORD")
+    if gmail_user and gmail_password:
+        # Streamlit re-runs this whole script on every click, so key the draft
+        # by the report itself - one report, one draft.
+        drafted = st.session_state.setdefault("drafts_made", {})
+        key = hashlib.sha1(docx_bytes).hexdigest()
+        if key not in drafted:
+            recipient = conf("REPORT_TO", DEFAULT_TO)
+            try:
+                with st.spinner("Saving the report to Gmail Drafts ..."):
+                    save_draft_to_gmail(
+                        build_draft_message(
+                            gmail_user, recipient, test_code, test_date,
+                            stats.n,
+                            {k: stats.avg(k)
+                             for k in ("total", "rw", "math")},
+                            docx_bytes, out_name),
+                        gmail_user, gmail_password)
+                drafted[key] = (True, recipient)
+            except Exception as e:  # never let mail trouble hide the report
+                drafted[key] = (False, str(e))
+        ok, detail = drafted[key]
+        if ok:
+            st.info(f"A draft to **{detail}** is waiting in the Gmail Drafts "
+                    f"folder of {gmail_user} - review it there and press "
+                    "Send. "
+                    "[Open Drafts](https://mail.google.com/mail/u/0/#drafts)")
+        else:
+            st.warning(f"The Gmail draft could not be created ({detail}) - "
+                       "use the download button below instead.")
 
     # --- download ------------------------------------------------------------
     st.download_button(
