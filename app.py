@@ -40,7 +40,8 @@ from generate_class_report import (
     report_filename,
     sanitize_branding,
 )
-from email_draft import DEFAULT_TO, build_draft_message, save_draft_to_gmail
+from email_draft import (DEFAULT_CC, DEFAULT_TO, build_draft_message,
+                         save_draft_to_gmail)
 
 NAVY = "#1F3864"
 BLUE = "#2E75B6"
@@ -263,6 +264,7 @@ if st.button("Generate Report", type="primary", use_container_width=True):
         key = hashlib.sha1(docx_bytes).hexdigest()
         if key not in drafted:
             recipient = conf("REPORT_TO", DEFAULT_TO)
+            copied = conf("REPORT_CC", DEFAULT_CC)
             try:
                 with st.spinner("Saving the report to Gmail Drafts ..."):
                     save_draft_to_gmail(
@@ -271,9 +273,10 @@ if st.button("Generate Report", type="primary", use_container_width=True):
                             stats.n,
                             {k: stats.avg(k)
                              for k in ("total", "rw", "math")},
-                            docx_bytes, out_name),
+                            docx_bytes, out_name, cc=copied),
                         gmail_user, gmail_password)
-                drafted[key] = (True, recipient)
+                drafted[key] = (True, f"{recipient} (cc {copied})"
+                                if copied else recipient)
             except Exception as e:  # never let mail trouble hide the report
                 drafted[key] = (False, str(e))
         ok, detail = drafted[key]

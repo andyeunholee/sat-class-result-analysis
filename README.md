@@ -68,6 +68,7 @@ Set three values in `.env` (or `.streamlit/secrets.toml`, or Streamlit Cloud's
 | `GMAIL_ADDRESS` | account whose Drafts folder receives the draft |
 | `GMAIL_APP_PASSWORD` | 16-character app password, https://myaccount.google.com/apppasswords |
 | `REPORT_TO` | recipient (default `sue.kim@eliteprep.com`) |
+| `REPORT_CC` | copied recipient (default `grace.han@eliteprep.com`; set it empty for no Cc) |
 
 Leave `GMAIL_ADDRESS` or `GMAIL_APP_PASSWORD` unset and the feature stays off;
 the app behaves exactly as it did before. A draft is never sent, so a failure

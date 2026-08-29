@@ -15,6 +15,7 @@ from email.message import EmailMessage
 
 IMAP_HOST = "imap.gmail.com"
 DEFAULT_TO = "sue.kim@eliteprep.com"
+DEFAULT_CC = "grace.han@eliteprep.com"
 
 # Edit these two lines to change how the draft addresses and signs off.
 GREETING = "Dear Sue 원장님,"
@@ -27,11 +28,13 @@ EN_DASH, MIDDOT = "\u2014", "\u00b7"
 
 
 def build_draft_message(sender, to, test_code, test_date, n_students,
-                        averages, docx_bytes, filename):
+                        averages, docx_bytes, filename, cc=""):
     """Assemble the draft.  averages: {"total": n|None, "rw": .., "math": ..}"""
     msg = EmailMessage()
     msg["From"] = sender
     msg["To"] = to
+    if cc:
+        msg["Cc"] = cc
     msg["Subject"] = (f"{test_code} SAT Test Result Analysis for Teacher "
                       f"({test_date})")
 
