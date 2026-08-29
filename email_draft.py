@@ -18,7 +18,7 @@ DEFAULT_TO = "sue.kim@eliteprep.com"
 
 # Edit these two lines to change how the draft addresses and signs off.
 GREETING = "Dear Sue 원장님,"
-SIGNATURE = "Best,\nAndy"
+SIGNATURE = "Thank you so much.\nAndy Lee / Elite Prep Suwanee"
 
 DOCX_MIME = ("application",
              "vnd.openxmlformats-officedocument.wordprocessingml.document")
